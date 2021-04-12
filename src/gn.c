@@ -97,6 +97,10 @@ unsigned three_to_the(unsigned n)
   return a;
 }
 
+void network_init_cuda(network_t n, network_t d_n, int n_node, int max_parents)
+{
+
+}
 void network_init(network_t n, int n_node, int max_parents)
 {
   n->n_node = n_node;
@@ -221,6 +225,8 @@ static void advance(const network_t n, trajectory_t traj, int i_state)
   }
 }
 
+
+// Step 1: copy memory to device
 #ifdef USE_CUDA
 __global__ static void advance_cuda(const network_t n, trajectory_t* traj, int i_state)
 {
@@ -230,7 +236,6 @@ __global__ static void advance_cuda(const network_t n, trajectory_t* traj, int i
   int *sil = &traj->state[i_state - 1][0];
 
   int i_node;
-
 
 }
 #endif
@@ -303,6 +308,12 @@ static double score_for_most_probable_state(const experiment_t e, int j)
   return score_for_state(e,j,most_probable_state(e,j));
 }
 
+#ifdef USE_CUDA
+static trajectory_t trajectories_new_pinned(int n)
+{
+    return (trajectory_t) safe_malloc_pinned(n*sizeof(struct trajectory));
+}
+#endif
 static trajectory_t trajectories_new(int n)
 {
   return (trajectory_t) safe_malloc(n*sizeof(struct trajectory));
@@ -532,6 +543,25 @@ static double score_for_trajectory(const experiment_t e, const trajectory_t t)
   return s;
 }
 
+static double score_cuda(network_t n, const experiment_set_t eset, trajectory_t trajectories, trajectory_t d_trajectories,
+        cudaStream_t *cudaStreams,
+                    double limit, int max_states)
+{
+    double s_tot = 0;
+    int i_exp;
+#pragma omp parallel for
+
+    for (i_exp = 0; i_exp < eset->n_experiment; i_exp++)
+    {
+        cudaMemCpyAsync(d_trajectories[i_exp], trajectories[i_exp], sizeof(struct trajectory), cudaMemCpyHostToDevice, cudaStreams[i_exp]);
+    }
+
+
+    // pragma goes here
+    //
+    const experiment_t e 
+}
+
 static double score(network_t n, const experiment_set_t eset, trajectory_t trajectories, 
                     double limit, int max_states)
 {
@@ -642,7 +672,21 @@ double network_monte_carlo(network_t n,
     die("network_monte_carlo: must have at least 2 nodes");
   if (n_node != e->n_node)
     die("network_monte_carlo: network has %d nodes, but experiment set has %d nodes", n_node, e->n_node);
+#ifdef USE_CUDA
+  trajectory_t trajectories = trajectories_new_pinned(e->n_experiment);
+  trajectory_t d_trajectories;
+  // allocate trajectories for cuda
+  cudaMalloc((trajectory_t)&d_trajectories, e->n_experiment * sizeof(struct trajectory));
+
+  // create streams for each experiment
+  cudaStream_t cudaStreams[e->n_experiment];
+  for(int i = 0; i < e->n_experiment; ++i)
+      cudaStreamCreate(&cudaStreams[i]);
+#else
   trajectory_t trajectories = trajectories_new(e->n_experiment);
+#endif
+
+
   double s = score(n,e,trajectories,HUGE_VAL,max_states), s_best = s;
 #ifdef USE_MPI
   fprintf(out, "Process %d of %d\n", mpi_rank, mpi_size);
@@ -673,6 +717,9 @@ double network_monte_carlo(network_t n,
   unsigned long outcome_acc = 0, outcome_tries = 0, outcome_moves = 1;
   unsigned long i;
   for (i = 1; i <= n_cycles; i++) {
+
+#ifdef USE_CUDA
+
 #ifdef USE_MPI
     if (mpi_size == 1)
 #endif
