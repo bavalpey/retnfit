@@ -14,12 +14,22 @@
 #include <omp.h>
 #endif
 
+#ifdef USE_CUDA
+#include <cuda_runtime.h>
+#endif
+
 #include "util.h"
 #include "gn.h"
 
 #define UNDEFINED 9
 #define LARGE_SCORE 1e10
 
+#ifdef USE_CUDA
+// CUDA functions go here
+
+
+
+#endif
 static int state_from_sym(char c)
 {
   switch (c) {
@@ -186,9 +196,15 @@ static int repetition_found(const trajectory_t t)
 
 static void advance(const network_t n, trajectory_t traj, int i_state)
 {
+  // Operates on states.  Transitions using 
   const int n_node = n->n_node;
+
+
   /* find new state */
   int *si = &traj->state[i_state][0];
+
+  // n-> parent should be shared memory across threads
+  // Change this to shared memory
   const int *si1 = &traj->state[i_state - 1][0];
   int i_node;
   for (i_node = 0; i_node < n_node; i_node++) {
@@ -197,13 +213,27 @@ static void advance(const network_t n, trajectory_t traj, int i_state)
     } else {
       int ip, a = 0;
       for (ip = n->n_parent - 1; ip >= 0; ip--) {
-	a *= 3;
-	a += si1[n->parent[i_node][ip]] + 1;
+            a *= 3;
+            a += si1[n->parent[i_node][ip]] + 1;
       }
       si[i_node] = n->outcome[i_node][a];
     }
   }
 }
+
+#ifdef USE_CUDA
+__global__ static void advance_cuda(const network_t n, trajectory_t* traj, int i_state)
+{
+  // Determine strides later...
+  const int n_node = n-> n_node;
+
+  int *sil = &traj->state[i_state - 1][0];
+
+  int i_node;
+
+
+}
+#endif
 
 static void check_for_repetition(trajectory_t traj, int i_state)
 {
@@ -227,14 +257,14 @@ static void check_for_repetition(trajectory_t traj, int i_state)
 	  visited_plus = 1;
 	else if (traj->state[k][i_node] == -1)
 	  visited_minus = 1;
-      if (visited_plus && visited_minus)
-	traj->steady_state[i_node] = UNDEFINED;
-      else if (visited_plus)
-	traj->steady_state[i_node] = 1;
-      else if (visited_minus)
-	traj->steady_state[i_node] = -1;
-      else
-	traj->steady_state[i_node] = 0;
+  if (visited_plus && visited_minus)
+      traj->steady_state[i_node] = UNDEFINED;
+  else if (visited_plus)
+      traj->steady_state[i_node] = 1;
+  else if (visited_minus)
+        traj->steady_state[i_node] = -1;
+  else
+      traj->steady_state[i_node] = 0;
     }
     return;
   }
@@ -425,10 +455,14 @@ double lowest_possible_score(const experiment_set_t eset)
 
 void network_advance_until_repetition(const network_t n, const experiment_t e, trajectory_t t, int max_states)
 {
+  // Warp boundary, since threads will diverge with repetition_found.
+  // cudaMallocManaged
   init_trajectory(t, e, n->n_node);
   int i;
   for (i = 1; i < max_states && !repetition_found(t); i++) {
+    // cuda memory transfer
     advance(n,t,i);
+    // cuda_device_synchronize
     check_for_repetition(t,i);
   }
 }
@@ -503,6 +537,10 @@ static double score(network_t n, const experiment_set_t eset, trajectory_t traje
 {
   double s_tot = 0;
   int i_exp;
+
+  // use CUDA instead of openmp to dispatch trajectory work to GPU
+  // work on trajectories are 100% independent
+  //
 #pragma omp parallel for
   for (i_exp = 0; i_exp < eset->n_experiment; i_exp++)
     if (s_tot <= limit) {
